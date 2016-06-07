@@ -45,3 +45,21 @@ $RECYCLE.BIN/
 Network Trash Folder
 Temporary Items
 .apdisk
+*.tlog
+*.log
+*.obj
+*.pdb
+dgl/Debug/dgl.exe.embed.manifest
+dgl/Debug/dgl.exe.embed.manifest.res
+dgl/Debug/dgl.exe.intermediate.manifest
+*.ilk
+*.lastbuildstate
+*.cache
+dgl/Debug/dgl_manifest.rc
+dgl/Debug/vc100.idb
+dgl/dgl.sln.docstates.suo
+*.ipch
+dgl/Release/dgl.exe.intermediate.manifest
+dgl/dgl.sln.docstates.suo
+*.suo
+*.user
