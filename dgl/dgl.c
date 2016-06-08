@@ -63,6 +63,8 @@ int wmain( int argc, LPTSTR argv[] )
     LARGE_INTEGER startingT, endingT, elapsedTicks;
     BOOL flags[ MAX_OPTIONS ] = { 0 };
     int targetDirInd = 0;
+    PVOID oldValueWow64 = NULL;
+    BOOL wow64Disabled = FALSE;
 
     // Fetch frec & initial ticks count
     QueryPerformanceFrequency( &freq );
@@ -145,8 +147,18 @@ int wmain( int argc, LPTSTR argv[] )
     if ( flags[ FL_DBG ] )
         wprintf_s( TEXT( "    %s\n" ), targetDir );
 
+    // Disable file system redirection
+    wow64Disabled = Wow64DisableWow64FsRedirection( &oldValueWow64 );
+
     // Scan target dir
     scanDir( targetDir, &resultsList, &resultsItem, TRUE, flags[ FL_DBG ] );
+
+    // Re-enable redirection
+    if ( wow64Disabled )
+    {
+        if ( !( Wow64RevertWow64FsRedirection( oldValueWow64 ) ) )
+            ReportError( TEXT( "Re-enable redirection failed." ), 1, TRUE );
+    }
 
     // Display results
     if ( ListIsEmpty( &resultsList ) )
@@ -229,7 +241,7 @@ BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL 
         // Win32 reports 0 bytes.
         // See results using '..\progsDev\others\TestGetFileSizeEx\'
         if ( GetLastError() != ERROR_ACCESS_DENIED )
-            ReportError( TEXT( "FindFirstFile failed" ), 0, TRUE );
+            ReportError( TEXT( "FindFirstFile failed." ), 0, TRUE );
 
         // Exit in any case
         return FALSE;
@@ -335,7 +347,7 @@ BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL 
     // Validate end of search
     if ( GetLastError() != ERROR_NO_MORE_FILES )
     {
-        ReportError( TEXT( "\nFindNextFile failed\n" ), 0, TRUE );
+        ReportError( TEXT( "\nFindNextFile failed.\n" ), 0, TRUE );
         return FALSE;
     }
 
