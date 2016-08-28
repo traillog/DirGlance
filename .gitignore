@@ -65,3 +65,9 @@ dgl/dgl.sln.docstates.suo
 *.user
 *.sdf
 *.opensdf
+dglGUI/Debug/dglGUI.exe.embed.manifest
+dglGUI/Debug/dglGUI.exe.embed.manifest.res
+dglGUI/Debug/dglGUI.exe.intermediate.manifest
+dglGUI/Debug/dglGUI_manifest.rc
+*.idb
+dglGUI/Release/dglGUI.exe.intermediate.manifest
