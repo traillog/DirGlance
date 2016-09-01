@@ -74,7 +74,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="auxFunctions.c" />
     <ClCompile Include="dglGUI.c" />
+    <ClCompile Include="list.c" />
+    <ClCompile Include="repError.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="list.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
