@@ -21,10 +21,10 @@
 #define     FL_DBG          7   // Extended output (debug purposes)
 
 // Function prototypes
-void analyseSubDir( TCHAR* targetDir, HWND hContsLBox );
+void analyseSubDir( TCHAR* targetDir, HWND hContsLBox, BOOL* pReset );
 extern DWORD Options( int argc, LPCWSTR argv[], LPCWSTR OptStr, ... );
 extern VOID ReportError( LPCTSTR userMsg, DWORD exitCode, BOOL prtErrorMsg );
-BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL dbg );
+BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL* pReset );
 BOOL ptDir( LPCTSTR inDir );
 void showResults( List* resultsList, Item* resultsLevel, HWND hConstLBox );
 void showItem( Item* pItem, HWND hConstLBox );
@@ -36,7 +36,7 @@ int cmpItemsName( Item* pItemN, Item* pItemM );
 void calcDispElapTime( const long long* ticksPt, const long long* freqPt );
 void sepThousands( const long long* numPt, TCHAR* acc, size_t elemsAcc );
 
-void analyseSubDir( TCHAR* targetDir, HWND hContsLBox )
+void analyseSubDir( TCHAR* targetDir, HWND hContsLBox, BOOL* pReset )
 {
     // Declare vars
     Item resultsItem = { 0 };
@@ -57,7 +57,7 @@ void analyseSubDir( TCHAR* targetDir, HWND hContsLBox )
     wow64Disabled = Wow64DisableWow64FsRedirection( &oldValueWow64 );
 
     // Scan target dir
-    scanDir( targetDir, &resultsList, &resultsItem, TRUE, flags[ FL_DBG ] );
+    scanDir( targetDir, &resultsList, &resultsItem, TRUE, pReset );
 
     // Re-enable redirection
     if ( wow64Disabled )
@@ -66,46 +66,45 @@ void analyseSubDir( TCHAR* targetDir, HWND hContsLBox )
             ReportError( TEXT( "Re-enable redirection failed." ), 1, TRUE );
     }
 
-    // Display results
-    if ( ListIsEmpty( &resultsList ) )
-        wprintf_s( TEXT( "\nNo data.\n\n" ) );
-    else
+    // Display results if the task is still active
+    if ( *pReset == FALSE )
     {
-        // Sort results
-        // if-else chain determines sorting priority
-        // one sorting type high prio excludes low prio types
-        if ( flags[ FL_SIZE ] )
-            // Sort by size (descending)
-            SortList( &resultsList, cmpItemsSizeCount );
-        else if ( flags[ FL_FILES ] )
-            // Sort by files count (descending)
-            SortList( &resultsList, cmpItemsFilesCount );
-        else if ( flags[ FL_DIRS ] )
-            // Sort by dirs count (descending)
-            SortList( &resultsList, cmpItemsDirsCount );
-        else if ( flags[ FL_MODIF ] )
-            // Sort by modification date (latest to earliest)
-            SortList( &resultsList, cmpItemsLastWriteTime );
-        else if ( flags[ FL_NAME ] )
-            // Sort by name (a to Z)
-            SortList( &resultsList, cmpItemsName );
+        if ( ListIsEmpty( &resultsList ) )
+            wprintf_s( TEXT( "\nNo data.\n\n" ) );
         else
-            // Default: sort by size (descending)
-            SortList( &resultsList, cmpItemsSizeCount );
+        {
+            // Sort results
+            // if-else chain determines sorting priority
+            // one sorting type high prio excludes low prio types
+            if ( flags[ FL_SIZE ] )
+                // Sort by size (descending)
+                SortList( &resultsList, cmpItemsSizeCount );
+            else if ( flags[ FL_FILES ] )
+                // Sort by files count (descending)
+                SortList( &resultsList, cmpItemsFilesCount );
+            else if ( flags[ FL_DIRS ] )
+                // Sort by dirs count (descending)
+                SortList( &resultsList, cmpItemsDirsCount );
+            else if ( flags[ FL_MODIF ] )
+                // Sort by modification date (latest to earliest)
+                SortList( &resultsList, cmpItemsLastWriteTime );
+            else if ( flags[ FL_NAME ] )
+                // Sort by name (a to Z)
+                SortList( &resultsList, cmpItemsName );
+            else
+                // Default: sort by size (descending)
+                SortList( &resultsList, cmpItemsSizeCount );
 
-        // Debug output
-        if ( flags[ FL_DBG ] )
-            wprintf_s( TEXT( "\n" ) );
-
-        // Display sorted results
-        showResults( &resultsList, &resultsItem, hContsLBox );
+            // Display sorted results
+            showResults( &resultsList, &resultsItem, hContsLBox );
+        }
     }
 
     // Housekeeping
     EmptyTheList( &resultsList );
 }
 
-BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL dbg )
+BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL* pReset )
 {
     TCHAR dirStr[ MAX_PATH ] = { 0 };
     HANDLE hFind = INVALID_HANDLE_VALUE;
@@ -114,6 +113,10 @@ BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL 
     
     LARGE_INTEGER parentSize = { 0 };
     LARGE_INTEGER currentSize = { 0 };
+
+    // Abort current scan
+    if ( *pReset == TRUE )
+        return FALSE;
 
     // Prepare string for use with FindFile functions.  First, copy the
     // string to a buffer, then append '\*' to the directory name.
@@ -170,12 +173,8 @@ BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL 
                 wcscat_s( dirStr, MAX_PATH, TEXT( "\\" ) );
                 wcscat_s( dirStr, MAX_PATH, currentItem.findInfo.cFileName );
 
-                // Debug output
-                if ( dbg )
-                    wprintf_s( TEXT( "    %s\n" ), dirStr );
-
                 // Scan subdir
-                scanDir( dirStr, resList, &currentItem, FALSE, dbg );
+                scanDir( dirStr, resList, &currentItem, FALSE, pReset );
 
                 // Update dirs count of parent using found subdirs
                 parentItem->dirsCount.QuadPart +=

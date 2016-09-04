@@ -4,6 +4,7 @@
 //
 
 #include <windows.h>
+#include <process.h>
 
 #define     ID_CurLocLbl            1
 #define     ID_CurDirLBox           2
@@ -16,7 +17,21 @@
 #define     ID_SizeBtn              9
 #define     ID_DateBtn              10
 
-extern void analyseSubDir( TCHAR* targetDir, HWND hContsLBox );
+#define     STATUS_READY            0
+#define     STATUS_WORKING          1
+#define     STATUS_DONE             2
+
+typedef struct
+{
+     HWND   hwndLBox;
+     HANDLE hEvent;
+     int    iStatus;
+     BOOL*  bNewLoc;
+     TCHAR* curDir;
+}
+PARAMS, *PPARAMS;
+
+extern void analyseSubDir( TCHAR* targetDir, HWND hContsLBox, BOOL* pReset );
 
 LRESULT CALLBACK WndProc( HWND, UINT, WPARAM, LPARAM );
 
@@ -69,6 +84,40 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
     return msg.wParam;
 }
 
+void Thread( PVOID pvoid )
+{
+    volatile PPARAMS pparams;
+
+    pparams = ( PPARAMS )pvoid;
+
+    while ( TRUE )
+    {
+        // Wait until the event gets signaled
+        WaitForSingleObject( pparams->hEvent, INFINITE );
+
+        // Do the lengthy task
+        // as long as you are allowed to
+        while ( TRUE )
+        {
+            analyseSubDir( pparams->curDir,
+                pparams->hwndLBox, pparams->bNewLoc );
+
+            if ( *( pparams->bNewLoc ) == TRUE )
+            {
+                // Start all over again
+                OutputDebugString( TEXT( "Restart thread\n" ) );
+                *( pparams->bNewLoc ) = FALSE;
+                SendMessage( pparams->hwndLBox, LB_RESETCONTENT, 0, 0 );
+            }
+            else
+            {
+                pparams->iStatus = STATUS_DONE;
+                break;
+            }
+        }
+    }
+}
+
 LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
     WPARAM wParam, LPARAM lParam )
 {
@@ -78,11 +127,15 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
     static HWND hSortLbl, hNameBtn, hSizeBtn, hDateBtn;
     static int cxChar, cyChar;
     static int cxClient, cyClient;
-    TCHAR currentDir[ MAX_PATH + 1 ] = { 0 };
-    TCHAR selSubDir[ MAX_PATH + 1 ] = { 0 };
+    static TCHAR currentDir[ MAX_PATH + 1 ] = { 0 };
+    static TCHAR selSubDir[ MAX_PATH + 1 ] = { 0 };
     int currentSelIndex;
     static LOGFONT logfont;
     static HFONT hFont;
+
+    static HANDLE hEvent;
+    static PARAMS params;
+    static BOOL bResetTask;
 
     switch ( message )
     {
@@ -194,8 +247,22 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
             DDL_DRIVES | DDL_DIRECTORY | DDL_EXCLUSIVE,
             ( LPARAM )TEXT( "*" ) );
 
-        // Update 'Contents' list box
-        analyseSubDir( currentDir, hContsLBox );
+        // Update 'Contents' list box ---> lengthy task !!!!
+        //analyseSubDir( currentDir, hContsLBox );
+        hEvent = CreateEvent( NULL, FALSE, FALSE, NULL );
+
+        bResetTask = FALSE;
+
+        params.hwndLBox = hContsLBox;
+        params.hEvent = hEvent;
+        params.iStatus = STATUS_WORKING;
+        params.bNewLoc = &bResetTask;
+        params.curDir = currentDir;
+
+        _beginthread( Thread, 0, &params );
+
+        // Trigger the first pass
+        SetEvent( hEvent );
 
         return 0;
 
@@ -294,8 +361,14 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
                 ( LPARAM )TEXT( "*" ) );
 
             // Update 'Contents' list box
-            SendMessage( hContsLBox, LB_RESETCONTENT, 0, 0 );
-            analyseSubDir( currentDir, hContsLBox );
+            // Trigger a new scan
+            bResetTask = TRUE;
+
+            if ( params.iStatus == STATUS_DONE )
+            {
+                params.iStatus = STATUS_WORKING;
+                SetEvent( hEvent );
+            }
 
             InvalidateRect (hwnd, NULL, TRUE) ;
         }
