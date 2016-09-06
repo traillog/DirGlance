@@ -10,22 +10,20 @@
 
 #define     MAX_OPTIONS     20  // Max # command line options
 
-// Flags indices
-#define     FL_SIZE         0   // Sort by size [bytes] (default)
-#define     FL_FILES        1   // Sort by files count (descending)
-#define     FL_DIRS         2   // Sort by dirs count (descending)
-#define     FL_MODIF        3   // Sort by date modified (latest to earliest)
-#define     FL_NAME         4   // Soft by name (a to Z)
-#define     FL_TYPE         5   // Sort by type (<DIR>, <LIN>, file)
-#define     FL_HELP         6   // Print usage
-#define     FL_DBG          7   // Extended output (debug purposes)
+// Sorting methodes
+#define     BY_SIZE         0   // Sort by size [bytes] (default)
+#define     BY_FILES        1   // Sort by files count (descending)
+#define     BY_DIRS         2   // Sort by dirs count (descending)
+#define     BY_MODIF        3   // Sort by date modified (latest to earliest)
+#define     BY_NAME         4   // Soft by name (a to Z)
+#define     BY_TYPE         5   // Sort by type (<DIR>, <LIN>, file)
 
 // Function prototypes
-void analyseSubDir( TCHAR* targetDir, HWND hContsLBox, BOOL* pReset );
 extern DWORD Options( int argc, LPCWSTR argv[], LPCWSTR OptStr, ... );
 extern VOID ReportError( LPCTSTR userMsg, DWORD exitCode, BOOL prtErrorMsg );
 BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL* pReset );
 BOOL ptDir( LPCTSTR inDir );
+void sortResults( List* plist, int sortMethod );
 void showResults( List* resultsList, Item* resultsLevel, HWND hConstLBox );
 void showItem( Item* pItem, HWND hConstLBox );
 int cmpItemsLastWriteTime( Item* pItemN, Item* pItemM );
@@ -35,74 +33,6 @@ int cmpItemsSizeCount( Item* pItemN, Item* pItemM );
 int cmpItemsName( Item* pItemN, Item* pItemM );
 void calcDispElapTime( const long long* ticksPt, const long long* freqPt );
 void sepThousands( const long long* numPt, TCHAR* acc, size_t elemsAcc );
-
-void analyseSubDir( TCHAR* targetDir, HWND hContsLBox, BOOL* pReset )
-{
-    // Declare vars
-    Item resultsItem = { 0 };
-    List resultsList = { 0 };
-    BOOL flags[ MAX_OPTIONS ] = { 0 };
-    PVOID oldValueWow64 = NULL;
-    BOOL wow64Disabled = FALSE;
-
-    // Initialize results list
-    InitializeList( &resultsList );
-    if ( ListIsFull( &resultsList ) )
-    {
-        wprintf_s( TEXT( "\nNo memory available!\n" ) );
-        return;
-    }
-
-    // Disable file system redirection
-    wow64Disabled = Wow64DisableWow64FsRedirection( &oldValueWow64 );
-
-    // Scan target dir
-    scanDir( targetDir, &resultsList, &resultsItem, TRUE, pReset );
-
-    // Re-enable redirection
-    if ( wow64Disabled )
-    {
-        if ( !( Wow64RevertWow64FsRedirection( oldValueWow64 ) ) )
-            ReportError( TEXT( "Re-enable redirection failed." ), 1, TRUE );
-    }
-
-    // Display results if the task is still active
-    if ( *pReset == FALSE )
-    {
-        if ( ListIsEmpty( &resultsList ) )
-            wprintf_s( TEXT( "\nNo data.\n\n" ) );
-        else
-        {
-            // Sort results
-            // if-else chain determines sorting priority
-            // one sorting type high prio excludes low prio types
-            if ( flags[ FL_SIZE ] )
-                // Sort by size (descending)
-                SortList( &resultsList, cmpItemsSizeCount );
-            else if ( flags[ FL_FILES ] )
-                // Sort by files count (descending)
-                SortList( &resultsList, cmpItemsFilesCount );
-            else if ( flags[ FL_DIRS ] )
-                // Sort by dirs count (descending)
-                SortList( &resultsList, cmpItemsDirsCount );
-            else if ( flags[ FL_MODIF ] )
-                // Sort by modification date (latest to earliest)
-                SortList( &resultsList, cmpItemsLastWriteTime );
-            else if ( flags[ FL_NAME ] )
-                // Sort by name (a to Z)
-                SortList( &resultsList, cmpItemsName );
-            else
-                // Default: sort by size (descending)
-                SortList( &resultsList, cmpItemsSizeCount );
-
-            // Display sorted results
-            showResults( &resultsList, &resultsItem, hContsLBox );
-        }
-    }
-
-    // Housekeeping
-    EmptyTheList( &resultsList );
-}
 
 BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL* pReset )
 {
@@ -265,6 +195,40 @@ BOOL ptDir( LPCTSTR inDir )
     {
         // otherwise
         return FALSE;
+    }
+}
+
+void sortResults( List* plist, int sortMethod )
+{
+    if ( ListIsEmpty( plist ) )
+        MessageBox( NULL, TEXT( "No results." ),
+            TEXT( "Dir Glance" ), MB_ICONERROR );
+    else
+    {
+        // Sort results
+        switch( sortMethod )
+        {
+        case BY_MODIF :
+            SortList( plist, cmpItemsLastWriteTime );
+            break;
+
+        case BY_FILES :
+            SortList( plist, cmpItemsFilesCount );
+            break;
+
+        case BY_DIRS :
+            SortList( plist, cmpItemsDirsCount );
+            break;
+
+        case BY_NAME :
+            SortList( plist, cmpItemsName );
+            break;
+
+        case BY_SIZE :
+        default :
+            SortList( plist, cmpItemsSizeCount );
+            break;
+        }
     }
 }
 

@@ -5,21 +5,32 @@
 
 #include <windows.h>
 #include <process.h>
+#include "list.h"               // Definition list ADT
 
-#define     ID_CurLocLbl            1
-#define     ID_CurDirLBox           2
-#define     ID_PlacesLbl            3
-#define     ID_PlacesLBox           4
-#define     ID_ContsLbl             5
-#define     ID_ContsLBox            6
-#define     ID_SortLbl              7
-#define     ID_NameBtn              8
-#define     ID_SizeBtn              9
-#define     ID_DateBtn              10
+// Children IDs
+#define     ID_CURLOCLBL            1
+#define     ID_CURDIRLBOX           2
+#define     ID_PLACESLBL            3
+#define     ID_PLACESLBOX           4
+#define     ID_CONTSLBL             5
+#define     ID_CONTSLBOX            6
+#define     ID_SORTLBL              7
+#define     ID_NAMEBTN              8
+#define     ID_SIZEBTN              9
+#define     ID_DATEBTN              10
 
+// Status IDs
 #define     STATUS_READY            0
 #define     STATUS_WORKING          1
 #define     STATUS_DONE             2
+
+// Sorting methods
+#define     BY_SIZE         0   // Sort by size [bytes] (default)
+#define     BY_FILES        1   // Sort by files count (descending)
+#define     BY_DIRS         2   // Sort by dirs count (descending)
+#define     BY_MODIF        3   // Sort by date modified (latest to earliest)
+#define     BY_NAME         4   // Soft by name (a to Z)
+#define     BY_TYPE         5   // Sort by type (<DIR>, <LIN>, file)
 
 typedef struct
 {
@@ -28,12 +39,23 @@ typedef struct
      int    iStatus;
      BOOL*  bNewLoc;
      TCHAR* curDir;
+     List*  pResList;
+     Item*  pResItem;
+     int    sortMethod;
 }
 PARAMS, *PPARAMS;
 
-extern void analyseSubDir( TCHAR* targetDir, HWND hContsLBox, BOOL* pReset );
+extern BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL* pReset );
+extern void showResults( List* resultsList, Item* resultsLevel, HWND hConstLBox );
+extern void sortResults( List* plist, int sortMethod );
 
 LRESULT CALLBACK WndProc( HWND, UINT, WPARAM, LPARAM );
+
+void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam );
+void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl );
+void updateCurDirPlaces( HWND* hElem, TCHAR* currentDir );
+void setupFontConts( HWND* hElem, LOGFONT* pLogfont, HFONT* pHfont );
+void setupLBoxHorzExt( HWND* hElem );
 
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
     PSTR szCmdLine, int iCmdShow )
@@ -87,6 +109,8 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
 void Thread( PVOID pvoid )
 {
     volatile PPARAMS pparams;
+    PVOID oldValueWow64 = NULL;
+    BOOL wow64Disabled = FALSE;
 
     pparams = ( PPARAMS )pvoid;
 
@@ -95,12 +119,40 @@ void Thread( PVOID pvoid )
         // Wait until the event gets signaled
         WaitForSingleObject( pparams->hEvent, INFINITE );
 
-        // Do the lengthy task
+        // Perform lengthy task
         // as long as you are allowed to
         while ( TRUE )
         {
-            analyseSubDir( pparams->curDir,
-                pparams->hwndLBox, pparams->bNewLoc );
+            // Disable file system redirection
+            wow64Disabled = Wow64DisableWow64FsRedirection( &oldValueWow64 );
+
+            // Reset results list
+            EmptyTheList( pparams->pResList );
+
+            // Reset results item
+            ZeroMemory( pparams->pResItem, sizeof( Item ) );
+
+            // Scan target dir
+            scanDir( pparams->curDir, pparams->pResList, pparams->pResItem,
+                TRUE, pparams->bNewLoc );
+
+            // Re-enable redirection
+            if ( wow64Disabled )
+            {
+                if ( !( Wow64RevertWow64FsRedirection( oldValueWow64 ) ) )
+                    MessageBox( NULL, TEXT( "Re-enable redirection failed." ),
+                        TEXT( "Dir Glance" ), MB_ICONERROR) ;
+            }
+
+            // Sort results
+            if ( *( pparams->bNewLoc ) == FALSE )
+                sortResults( pparams->pResList, pparams->sortMethod );
+
+            // Display results
+            if ( *( pparams->bNewLoc ) == FALSE )
+                showResults( pparams->pResList, pparams->pResItem,
+                    pparams->hwndLBox );
+
 
             if ( *( pparams->bNewLoc ) == TRUE )
             {
@@ -121,10 +173,7 @@ void Thread( PVOID pvoid )
 LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
     WPARAM wParam, LPARAM lParam )
 {
-    static HWND hCurLocLbl, hCurDirLBox;
-    static HWND hPlacesLbl, hPlacesLBox;
-    static HWND hContsLbl, hContsLBox;
-    static HWND hSortLbl, hNameBtn, hSizeBtn, hDateBtn;
+    static HWND hElem[ 10 ] = { 0 };
     static int cxChar, cyChar;
     static int cxClient, cyClient;
     static TCHAR currentDir[ MAX_PATH + 1 ] = { 0 };
@@ -136,6 +185,9 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
     static HANDLE hEvent;
     static PARAMS params;
     static BOOL bResetTask;
+    static List resultsList = { 0 };
+    static Item resultsItem = { 0 };
+    static int sortMethod = BY_SIZE;
 
     switch ( message )
     {
@@ -144,126 +196,44 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         cxChar = LOWORD( GetDialogBaseUnits() );
         cyChar = HIWORD( GetDialogBaseUnits() );
 
-        // Create 'Current Location' label
-        hCurLocLbl = CreateWindow(
-            TEXT( "static" ), TEXT( "Current Location :" ),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_CurLocLbl ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+        // Create child windows
+        createChildren( hElem, hwnd, lParam );
 
-        // Create 'Current Dir' list box
-        hCurDirLBox = CreateWindow(
-            TEXT( "listbox" ), NULL,
-            WS_CHILD | WS_VISIBLE | LBS_STANDARD | WS_HSCROLL,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_CurDirLBox ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
-
-        // Create 'Places' label
-        hPlacesLbl = CreateWindow(
-            TEXT( "static" ), TEXT( "Places :" ),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_PlacesLbl ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
-
-        // Create 'Places' list box
-        hPlacesLBox = CreateWindow(
-            TEXT( "listbox" ), NULL,
-            WS_CHILD | WS_VISIBLE | LBS_STANDARD | WS_HSCROLL,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_PlacesLBox ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
-
-        // Create 'Contents' label
-        hContsLbl = CreateWindow(
-            TEXT( "static" ), TEXT( "Contents :" ),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_ContsLbl ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
-
-        // Create 'Contents' list box
-        hContsLBox = CreateWindow(
-            TEXT( "listbox" ), NULL,
-            WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_BORDER |
-                WS_VSCROLL | WS_HSCROLL,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_ContsLBox ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
-
-        // Create 'Sort' label
-        hSortLbl = CreateWindow(
-            TEXT( "static" ), TEXT( "Sort :" ),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_SortLbl ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
-
-        // Create 'By Name' button
-        hNameBtn = CreateWindow(
-            TEXT( "button" ), TEXT( "By Name" ),
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_NameBtn ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
-
-        // Create 'By Size' button
-        hSizeBtn = CreateWindow(
-            TEXT( "button" ), TEXT( "By Size" ),
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_SizeBtn ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
-
-        // Create 'By Date' button
-        hDateBtn = CreateWindow(
-            TEXT( "button" ), TEXT( "By Date" ),
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_DateBtn ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
-
-        // Initialize font of the 'Contents' listbox
-        GetObject( GetStockObject( SYSTEM_FIXED_FONT ), sizeof( LOGFONT ), 
-            ( PTSTR )&logfont );
-        hFont = CreateFontIndirect( &logfont );
-        SendMessage( hContsLBox, WM_SETFONT, ( WPARAM )hFont, 0 );
+        // Init font of the 'Contents' listbox
+        setupFontConts( hElem, &logfont, &hFont );
 
         // Setup listboxes horizontal extents
-        SendMessage( hCurDirLBox, LB_SETHORIZONTALEXTENT, 1000, 0 );
-        SendMessage( hPlacesLBox, LB_SETHORIZONTALEXTENT, 1000, 0 );
-        SendMessage( hContsLBox, LB_SETHORIZONTALEXTENT, 1000, 0 );
+        setupLBoxHorzExt( hElem );
 
         // Get current dir
         GetCurrentDirectory( MAX_PATH + 1, currentDir );
 
-        // Show current dir in list box
-        SendMessage( hCurDirLBox, LB_ADDSTRING, 0, ( LPARAM )currentDir );
-
-        // Populate the 'Places' list box
-        SendMessage( hPlacesLBox, LB_DIR,
-            DDL_DRIVES | DDL_DIRECTORY | DDL_EXCLUSIVE,
-            ( LPARAM )TEXT( "*" ) );
+        // Update current dir & places
+        updateCurDirPlaces( hElem, currentDir );
 
         // Update 'Contents' list box ---> lengthy task !!!!
-        //analyseSubDir( currentDir, hContsLBox );
+        InitializeList( &resultsList );
+
+        // Seutp worker thread infos
         hEvent = CreateEvent( NULL, FALSE, FALSE, NULL );
 
         bResetTask = FALSE;
+        sortMethod = BY_SIZE;
 
-        params.hwndLBox = hContsLBox;
+        params.hwndLBox = hElem[ ID_CONTSLBOX ];
         params.hEvent = hEvent;
         params.iStatus = STATUS_WORKING;
         params.bNewLoc = &bResetTask;
         params.curDir = currentDir;
+        params.pResList = &resultsList;
+        params.pResItem = &resultsItem;
+        params.sortMethod = sortMethod;
 
+        // Start worker thread (paused)
         _beginthread( Thread, 0, &params );
 
-        // Trigger the first pass
+        // Trigger initial dir scan
         SetEvent( hEvent );
-
         return 0;
 
     case WM_SIZE :
@@ -271,69 +241,19 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         cxClient = LOWORD( lParam );
         cyClient = HIWORD( lParam );
 
-        // Size and position 'Current Location' label
-        MoveWindow( hCurLocLbl,
-            cyChar, cyChar,
-            24 * cxChar, cyChar, TRUE);
-
-        // Size and position 'Current Dir' list box
-        MoveWindow( hCurDirLBox,
-            cyChar, 2 * cyChar,
-            cxClient - 3 * cyChar, 3 * cyChar, TRUE);
-
-        // Size and position 'Places' label
-        MoveWindow( hPlacesLbl,
-            cyChar, 5 * cyChar,
-            24 * cxChar, cyChar, TRUE);
-
-        // Size and position 'Places' list box
-        MoveWindow( hPlacesLBox,
-            cyChar, 6 * cyChar,
-            30 * cxChar, cyClient - 7 * cyChar, TRUE);
-
-        // Size and position 'Contents' label
-        MoveWindow( hContsLbl,
-            cyChar + 30 * cxChar + cyChar, 5 * cyChar,
-            24 * cxChar, cyChar, TRUE);
-
-        // Size and position 'Contents' list box
-        MoveWindow( hContsLBox,
-            cyChar + 30 * cxChar + cyChar, 6 * cyChar,
-            cxClient - ( cyChar + 30 * cxChar + cyChar + cyChar),
-            cyClient - 12 * cyChar, TRUE);
-
-        // Size and position 'Sort' label
-        MoveWindow( hSortLbl,
-            cyChar + 30 * cxChar + cyChar, cyClient - 5 * cyChar,
-            24 * cxChar, cyChar, TRUE);
-
-        // Size and position 'By Name' button
-        MoveWindow( hNameBtn,
-            cyChar + 30 * cxChar + cyChar, cyClient - 4 * cyChar,
-            12 * cxChar, 2 * cyChar, TRUE);
-
-        // Size and position 'By Size' button
-        MoveWindow( hSizeBtn,
-            cyChar + 30 * cxChar + cyChar + 13 * cxChar, cyClient - 4 * cyChar,
-            12 * cxChar, 2 * cyChar, TRUE);
-
-        // Size and position 'By Date' button
-        MoveWindow( hDateBtn,
-            cyChar + 30 * cxChar + cyChar + 13 * cxChar + 13 * cxChar,
-            cyClient - 4 * cyChar,
-            12 * cxChar, 2 * cyChar, TRUE);
-
+        // Size children
+        sizeChildren( hElem, cxChar, cyChar, cxClient, cyClient );
         return 0;
 
     case WM_COMMAND :
-        if ( LOWORD( wParam ) == ID_PlacesLBox &&
+        if ( LOWORD( wParam ) == ID_PLACESLBOX &&
              HIWORD( wParam ) == LBN_DBLCLK )
         {
             if ( LB_ERR == ( currentSelIndex =
-                SendMessage( hPlacesLBox, LB_GETCURSEL, 0, 0 ) ) )
+                SendMessage( hElem[ ID_PLACESLBOX ], LB_GETCURSEL, 0, 0 ) ) )
                 break;
 
-            SendMessage( hPlacesLBox, LB_GETTEXT, currentSelIndex,
+            SendMessage( hElem[ ID_PLACESLBOX ], LB_GETTEXT, currentSelIndex,
                 ( LPARAM )selSubDir );
 
             selSubDir[ lstrlen( selSubDir ) - 1 ] = '\0';
@@ -350,19 +270,13 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
             // Get the new directory name and fill the list box.
             GetCurrentDirectory( MAX_PATH + 1, currentDir );
 
-            // Update 'Current Dir' list box
-            SendMessage( hCurDirLBox, LB_RESETCONTENT, 0, 0 );
-            SendMessage( hCurDirLBox, LB_ADDSTRING, 0, ( LPARAM )currentDir );
-
-            // Reload the 'Places' list box
-            SendMessage( hPlacesLBox, LB_RESETCONTENT, 0, 0 );
-            SendMessage( hPlacesLBox, LB_DIR,
-                DDL_DRIVES | DDL_DIRECTORY | DDL_EXCLUSIVE,
-                ( LPARAM )TEXT( "*" ) );
+            // Update current dir & places
+            updateCurDirPlaces( hElem, currentDir );
 
             // Update 'Contents' list box
             // Trigger a new scan
             bResetTask = TRUE;
+            params.curDir = currentDir;
 
             if ( params.iStatus == STATUS_DONE )
             {
@@ -375,10 +289,183 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         return 0;
 
     case WM_DESTROY :
+        // Housekeeping
+        EmptyTheList( &resultsList );
+        DeleteObject( hFont );
+
         // Close the application
         PostQuitMessage( 0 );
         return 0;
     }
 
     return DefWindowProc( hwnd, message, wParam, lParam );
+}
+
+void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam )
+{
+    // Create 'Current Location' label
+        hElem[ ID_CURLOCLBL ] = CreateWindow(
+            TEXT( "static" ), TEXT( "Current Location :" ),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_CURLOCLBL ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+        // Create 'Current Dir' list box
+        hElem[ ID_CURDIRLBOX ] = CreateWindow(
+            TEXT( "listbox" ), NULL,
+            WS_CHILD | WS_VISIBLE | LBS_STANDARD | WS_HSCROLL,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_CURDIRLBOX ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+        // Create 'Places' label
+        hElem[ ID_PLACESLBL ] = CreateWindow(
+            TEXT( "static" ), TEXT( "Places :" ),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_PLACESLBL ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+        // Create 'Places' list box
+        hElem[ ID_PLACESLBOX ] = CreateWindow(
+            TEXT( "listbox" ), NULL,
+            WS_CHILD | WS_VISIBLE | LBS_STANDARD | WS_HSCROLL,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_PLACESLBOX ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+        // Create 'Contents' label
+        hElem[ ID_CONTSLBL ] = CreateWindow(
+            TEXT( "static" ), TEXT( "Contents :" ),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_CONTSLBL ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+        // Create 'Contents' list box
+        hElem[ ID_CONTSLBOX ] = CreateWindow(
+            TEXT( "listbox" ), NULL,
+            WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_BORDER |
+                WS_VSCROLL | WS_HSCROLL,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_CONTSLBOX ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+        // Create 'Sort' label
+        hElem[ ID_SORTLBL ] = CreateWindow(
+            TEXT( "static" ), TEXT( "Sort :" ),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_SORTLBL ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+        // Create 'By Name' button
+        hElem[ ID_NAMEBTN ] = CreateWindow(
+            TEXT( "button" ), TEXT( "By Name" ),
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_NAMEBTN ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+        // Create 'By Size' button
+        hElem[ ID_SIZEBTN ] = CreateWindow(
+            TEXT( "button" ), TEXT( "By Size" ),
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_SIZEBTN ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+        // Create 'By Date' button
+        hElem[ ID_DATEBTN ] = CreateWindow(
+            TEXT( "button" ), TEXT( "By Date" ),
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            0, 0, 0, 0,
+            hwnd, ( HMENU )( ID_DATEBTN ),
+            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+}
+
+void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl )
+{
+    // Size and position 'Current Location' label
+        MoveWindow( hElem[ ID_CURLOCLBL ],
+            cyCh, cyCh,
+            24 * cxCh, cyCh, TRUE);
+
+        // Size and position 'Current Dir' list box
+        MoveWindow( hElem[ ID_CURDIRLBOX ],
+            cyCh, 2 * cyCh,
+            cxCl - 3 * cyCh, 3 * cyCh, TRUE);
+
+        // Size and position 'Places' label
+        MoveWindow( hElem[ ID_PLACESLBL ],
+            cyCh, 5 * cyCh,
+            24 * cxCh, cyCh, TRUE);
+
+        // Size and position 'Places' list box
+        MoveWindow( hElem[ ID_PLACESLBOX ],
+            cyCh, 6 * cyCh,
+            30 * cxCh, cyCl - 7 * cyCh, TRUE);
+
+        // Size and position 'Contents' label
+        MoveWindow( hElem[ ID_CONTSLBL ],
+            cyCh + 30 * cxCh + cyCh, 5 * cyCh,
+            24 * cxCh, cyCh, TRUE);
+
+        // Size and position 'Contents' list box
+        MoveWindow( hElem[ ID_CONTSLBOX ],
+            cyCh + 30 * cxCh + cyCh, 6 * cyCh,
+            cxCl - ( cyCh + 30 * cxCh + cyCh + cyCh),
+            cyCl - 12 * cyCh, TRUE);
+
+        // Size and position 'Sort' label
+        MoveWindow( hElem[ ID_SORTLBL ],
+            cyCh + 30 * cxCh + cyCh, cyCl - 5 * cyCh,
+            24 * cxCh, cyCh, TRUE);
+
+        // Size and position 'By Name' button
+        MoveWindow( hElem[ ID_NAMEBTN ],
+            cyCh + 30 * cxCh + cyCh, cyCl - 4 * cyCh,
+            12 * cxCh, 2 * cyCh, TRUE);
+
+        // Size and position 'By Size' button
+        MoveWindow( hElem[ ID_SIZEBTN ],
+            cyCh + 30 * cxCh + cyCh + 13 * cxCh, cyCl - 4 * cyCh,
+            12 * cxCh, 2 * cyCh, TRUE);
+
+        // Size and position 'By Date' button
+        MoveWindow( hElem[ ID_DATEBTN ],
+            cyCh + 30 * cxCh + cyCh + 13 * cxCh + 13 * cxCh,
+            cyCl - 4 * cyCh,
+            12 * cxCh, 2 * cyCh, TRUE);
+}
+
+void updateCurDirPlaces( HWND* hElem, TCHAR* currentDir )
+{
+    // Update 'Current Dir' list box
+    SendMessage( hElem[ ID_CURDIRLBOX ], LB_RESETCONTENT, 0, 0 );
+    SendMessage( hElem[ ID_CURDIRLBOX ], LB_ADDSTRING, 0, ( LPARAM )currentDir );
+
+    // Reload the 'Places' list box
+    SendMessage( hElem[ ID_PLACESLBOX ], LB_RESETCONTENT, 0, 0 );
+    SendMessage( hElem[ ID_PLACESLBOX ], LB_DIR,
+        DDL_DRIVES | DDL_DIRECTORY | DDL_EXCLUSIVE,
+        ( LPARAM )TEXT( "*" ) );
+}
+
+void setupFontConts( HWND* hElem, LOGFONT* pLogfont, HFONT* pHfont )
+{
+    GetObject( GetStockObject( SYSTEM_FIXED_FONT ), sizeof( LOGFONT ), 
+        ( PTSTR )pLogfont );
+
+    *pHfont = CreateFontIndirect( pLogfont );
+
+    SendMessage( hElem[ ID_CONTSLBOX ], WM_SETFONT, ( WPARAM )(*pHfont), 0 );
+}
+
+void setupLBoxHorzExt( HWND* hElem )
+{
+    SendMessage( hElem[ ID_CURDIRLBOX ], LB_SETHORIZONTALEXTENT, 1000, 0 );
+    SendMessage( hElem[ ID_PLACESLBOX ], LB_SETHORIZONTALEXTENT, 1000, 0 );
+    SendMessage( hElem[ ID_CONTSLBOX ], LB_SETHORIZONTALEXTENT, 1000, 0 );
 }
