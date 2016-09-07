@@ -165,7 +165,7 @@ void SortList( List* plist, int ( *cmpFun )( Item* pItemN, Item* pItemM ) )
 
         for ( seek = top + 1; seek <= plist->iCount; seek++ )
         {
-            if ( ( *cmpFun )( &seekPt->item, &topPt->item ) == 1 )
+            if ( ( *cmpFun )( &seekPt->item, &topPt->item ) > 0 )
                 SwapNodes( seekPt, topPt );
 
             seekPt = seekPt->next;

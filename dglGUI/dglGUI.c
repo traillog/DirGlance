@@ -11,14 +11,17 @@
 // Worker thread data
 typedef struct paramsTag
 {
-     HWND   hwndLBox;
+     HWND   hLBox;
+     HWND   hNameBtn;
+     HWND   hSizeBtn;
+     HWND   hDateBtn;
      HANDLE hEvent;
      int    iStatus;
      BOOL*  bNewLoc;
      TCHAR* curDir;
      List*  pResList;
      Item*  pResItem;
-     int    sortMethod;
+     int*    sortMethod;
 }
 PARAMS, *PPARAMS;
 
@@ -29,12 +32,14 @@ extern void sortResults( List* plist, int sortMethod );
 LRESULT CALLBACK WndProc( HWND, UINT, WPARAM, LPARAM );
 
 void analyseSubdir( PPARAMS pparams );
+void applySorting( HWND* hElem, int* pSortMeth, int newSort, List* pResList, Item* pResItem );
 void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam );
 void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl );
 BOOL fetchSelSubdir( HWND* hElem, TCHAR* currentDir );
 void updateCurDirPlaces( HWND* hElem, TCHAR* currentDir );
 void setupFontConts( HWND* hElem, LOGFONT* pLogfont, HFONT* pHfont );
 void setupLBoxHorzExt( HWND* hElem );
+void updateStateSortBtns( HWND hNameB, HWND hSizeB, HWND hDateB, BOOL state );
 
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
     PSTR szCmdLine, int iCmdShow )
@@ -109,20 +114,24 @@ void Thread( PVOID pvoid )
                 // Start all over again
                 OutputDebugString( TEXT( "Restart thread\n" ) );
                 *( pparams->bNewLoc ) = FALSE;
-                SendMessage( pparams->hwndLBox, LB_RESETCONTENT, 0, 0 );
+                SendMessage( pparams->hLBox, LB_RESETCONTENT, 0, 0 );
             }
             else
             {
                 // Sort results
-                sortResults( pparams->pResList, pparams->sortMethod );
+                sortResults( pparams->pResList, *( pparams->sortMethod ) );
 
                 // Display results
                 showResults( pparams->pResList, pparams->pResItem,
-                    pparams->hwndLBox );
+                    pparams->hLBox );
 
                 // Update status
                 pparams->iStatus = STATUS_DONE;
 
+                // Enalbe sorting buttons
+                updateStateSortBtns( pparams->hNameBtn, pparams->hSizeBtn,
+                    pparams->hDateBtn, TRUE );
+                
                 break;
             }
         }
@@ -165,6 +174,10 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         // Update current dir & places
         updateCurDirPlaces( hElem, currentDir );
 
+        // Disable sorting buttons
+        updateStateSortBtns( hElem[ ID_NAMEBTN ], hElem[ ID_SIZEBTN ],
+            hElem[ ID_DATEBTN ], FALSE );
+
         // Initialize results list
         InitializeList( &resultsList );
 
@@ -174,14 +187,17 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         bResetTask = FALSE;
         sortMethod = BY_SIZE;
 
-        params.hwndLBox = hElem[ ID_CONTSLBOX ];
+        params.hLBox = hElem[ ID_CONTSLBOX ];
+        params.hNameBtn = hElem[ ID_NAMEBTN ];
+        params.hSizeBtn = hElem[ ID_SIZEBTN ];
+        params.hDateBtn = hElem[ ID_DATEBTN ];
         params.hEvent = hEvent;
         params.iStatus = STATUS_WORKING;
         params.bNewLoc = &bResetTask;
         params.curDir = currentDir;
         params.pResList = &resultsList;
         params.pResItem = &resultsItem;
-        params.sortMethod = sortMethod;
+        params.sortMethod = &sortMethod;
 
         // Start worker thread (paused)
         _beginthread( Thread, 0, &params );
@@ -205,12 +221,39 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
 
             if ( params.iStatus == STATUS_DONE )
             {
+                // Update status
                 params.iStatus = STATUS_WORKING;
+
+                // Disable sorting buttons
+                updateStateSortBtns( hElem[ ID_NAMEBTN ], hElem[ ID_SIZEBTN ],
+                    hElem[ ID_DATEBTN ], FALSE );
+
+                // Trigger next dir scan
                 SetEvent( hEvent );
             }
-
-            InvalidateRect (hwnd, NULL, TRUE) ;
         }
+
+        if ( LOWORD( wParam ) == ID_NAMEBTN &&      
+             HIWORD( wParam ) == BN_CLICKED )
+        {
+            // Sort results by Name
+            applySorting( hElem, &sortMethod, BY_NAME, &resultsList, &resultsItem );
+        }
+
+        if ( LOWORD( wParam ) == ID_SIZEBTN &&      
+             HIWORD( wParam ) == BN_CLICKED )
+        {
+            // Sort results by Size
+            applySorting( hElem, &sortMethod, BY_SIZE, &resultsList, &resultsItem );
+        }
+
+        if ( LOWORD( wParam ) == ID_DATEBTN &&      
+             HIWORD( wParam ) == BN_CLICKED )
+        {
+            // Sort results by Date
+            applySorting( hElem, &sortMethod, BY_MODIF, &resultsList, &resultsItem );
+        }
+
         return 0;
 
     case WM_SIZE :
@@ -260,6 +303,30 @@ void analyseSubdir( PPARAMS pparams )
             MessageBox( NULL, TEXT( "Re-enable redirection failed." ),
             TEXT( "Dir Glance" ), MB_ICONERROR);
     }
+}
+
+void applySorting( HWND* hElem, int* pSortMeth, int newSort,
+    List* pResList, Item* pResItem )
+{
+    // Disable sorting buttons
+    updateStateSortBtns( hElem[ ID_NAMEBTN ], hElem[ ID_SIZEBTN ],
+        hElem[ ID_DATEBTN ], FALSE );
+
+    // Delete displayed contents
+    SendMessage( hElem[ ID_CONTSLBOX ], LB_RESETCONTENT, 0, 0 );
+
+    // Update sorting method
+    *pSortMeth = newSort;
+
+    // Sort results
+    sortResults( pResList, newSort );
+
+    // Display results
+    showResults( pResList, pResItem, hElem[ ID_CONTSLBOX ] );
+
+    // Enable sorting buttons
+    updateStateSortBtns( hElem[ ID_NAMEBTN ], hElem[ ID_SIZEBTN ],
+        hElem[ ID_DATEBTN ], TRUE );
 }
 
 void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam )
@@ -463,4 +530,11 @@ void setupLBoxHorzExt( HWND* hElem )
     SendMessage( hElem[ ID_CURDIRLBOX ], LB_SETHORIZONTALEXTENT, 1000, 0 );
     SendMessage( hElem[ ID_PLACESLBOX ], LB_SETHORIZONTALEXTENT, 1000, 0 );
     SendMessage( hElem[ ID_CONTSLBOX ], LB_SETHORIZONTALEXTENT, 1000, 0 );
+}
+
+void updateStateSortBtns( HWND hNameB, HWND hSizeB, HWND hDateB, BOOL state )
+{
+    EnableWindow( hNameB, state );
+    EnableWindow( hSizeB, state );
+    EnableWindow( hDateB, state );
 }

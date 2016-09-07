@@ -232,7 +232,7 @@ void sortResults( List* plist, int sortMethod )
     }
 }
 
-void showResults( List* resultsList, Item* resultsLevel, HWND hConstLBox )
+void showResults( List* resultsList, Item* resultsLevel, HWND hContsLBox )
 {
     if ( ListIsEmpty( resultsList ) )
         MessageBox( NULL, TEXT( "No results - showResults()" ),
@@ -240,10 +240,12 @@ void showResults( List* resultsList, Item* resultsLevel, HWND hConstLBox )
     else
     {
         // Display founded entries
-        Traverse( resultsList, showItem, hConstLBox );
+        Traverse( resultsList, showItem, hContsLBox );
 
         // Display totals
-        showItem( resultsLevel, hConstLBox );
+        SendMessage( hContsLBox, LB_ADDSTRING, 0,
+            ( LPARAM )TEXT( " =================== ================ ========== ================== ================================" ) );
+        showItem( resultsLevel, hContsLBox );
     }
 }
 
@@ -271,7 +273,7 @@ void showItem( Item* pItem, HWND hContsLBox )
 
     // Disp entry last modification date & time
     swprintf_s( dateStr, _countof( dateStr ),
-        TEXT( "    %04d-%02d-%02d %02d:%02d:%02d" ),
+        TEXT( " %04d-%02d-%02d %02d:%02d:%02d" ),
         lastWriteSYSTIME.wYear,
         lastWriteSYSTIME.wMonth,
         lastWriteSYSTIME.wDay,
