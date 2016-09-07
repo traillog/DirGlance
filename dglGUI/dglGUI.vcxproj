@@ -80,6 +80,7 @@
     <ClCompile Include="repError.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="dglGUI.h" />
     <ClInclude Include="list.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -201,7 +201,7 @@ BOOL ptDir( LPCTSTR inDir )
 void sortResults( List* plist, int sortMethod )
 {
     if ( ListIsEmpty( plist ) )
-        MessageBox( NULL, TEXT( "No results." ),
+        MessageBox( NULL, TEXT( "No results - sortResults()" ),
             TEXT( "Dir Glance" ), MB_ICONERROR );
     else
     {
@@ -234,36 +234,17 @@ void sortResults( List* plist, int sortMethod )
 
 void showResults( List* resultsList, Item* resultsLevel, HWND hConstLBox )
 {
-    // Display header
-    wprintf_s( TEXT( "    %19s %5s %10s %10s %18s %s\n" ),
-        TEXT( "Date Modified" ),
-        TEXT( "Type" ),
-        TEXT( "Dirs" ),
-        TEXT( "Files" ),
-        TEXT( "Size" ),
-        TEXT( "Name" ) );
+    if ( ListIsEmpty( resultsList ) )
+        MessageBox( NULL, TEXT( "No results - showResults()" ),
+            TEXT( "Dir Glance" ), MB_ICONERROR );
+    else
+    {
+        // Display founded entries
+        Traverse( resultsList, showItem, hConstLBox );
 
-    wprintf_s( TEXT( "    %19s %5s %10s %10s %18s %s\n" ),
-        TEXT( "-------------------" ),
-        TEXT( "-----" ),
-        TEXT( "----------" ),
-        TEXT( "----------" ),
-        TEXT( "------------------" ),
-        TEXT( "---------------------------------------------" ) );
-
-    // Display founded entries
-    Traverse( resultsList, showItem, hConstLBox );
-
-    // Display totals
-    wprintf_s( TEXT( "    %19s %5s %10s %10s %18s %s\n" ),
-        TEXT( "-------------------" ),
-        TEXT( "-----" ),
-        TEXT( "----------" ),
-        TEXT( "----------" ),
-        TEXT( "------------------" ),
-        TEXT( "---------------------------------------------" ) );
-
-    showItem( resultsLevel, hConstLBox );
+        // Display totals
+        showItem( resultsLevel, hConstLBox );
+    }
 }
 
 void showItem( Item* pItem, HWND hContsLBox )

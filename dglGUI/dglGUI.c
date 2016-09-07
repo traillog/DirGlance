@@ -5,34 +5,11 @@
 
 #include <windows.h>
 #include <process.h>
+#include "dglGUI.h"
 #include "list.h"               // Definition list ADT
 
-// Children IDs
-#define     ID_CURLOCLBL            1
-#define     ID_CURDIRLBOX           2
-#define     ID_PLACESLBL            3
-#define     ID_PLACESLBOX           4
-#define     ID_CONTSLBL             5
-#define     ID_CONTSLBOX            6
-#define     ID_SORTLBL              7
-#define     ID_NAMEBTN              8
-#define     ID_SIZEBTN              9
-#define     ID_DATEBTN              10
-
-// Status IDs
-#define     STATUS_READY            0
-#define     STATUS_WORKING          1
-#define     STATUS_DONE             2
-
-// Sorting methods
-#define     BY_SIZE         0   // Sort by size [bytes] (default)
-#define     BY_FILES        1   // Sort by files count (descending)
-#define     BY_DIRS         2   // Sort by dirs count (descending)
-#define     BY_MODIF        3   // Sort by date modified (latest to earliest)
-#define     BY_NAME         4   // Soft by name (a to Z)
-#define     BY_TYPE         5   // Sort by type (<DIR>, <LIN>, file)
-
-typedef struct
+// Worker thread data
+typedef struct paramsTag
 {
      HWND   hwndLBox;
      HANDLE hEvent;
@@ -51,8 +28,10 @@ extern void sortResults( List* plist, int sortMethod );
 
 LRESULT CALLBACK WndProc( HWND, UINT, WPARAM, LPARAM );
 
+void analyseSubdir( PPARAMS pparams );
 void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam );
 void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl );
+BOOL fetchSelSubdir( HWND* hElem, TCHAR* currentDir );
 void updateCurDirPlaces( HWND* hElem, TCHAR* currentDir );
 void setupFontConts( HWND* hElem, LOGFONT* pLogfont, HFONT* pHfont );
 void setupLBoxHorzExt( HWND* hElem );
@@ -109,8 +88,6 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
 void Thread( PVOID pvoid )
 {
     volatile PPARAMS pparams;
-    PVOID oldValueWow64 = NULL;
-    BOOL wow64Disabled = FALSE;
 
     pparams = ( PPARAMS )pvoid;
 
@@ -123,37 +100,10 @@ void Thread( PVOID pvoid )
         // as long as you are allowed to
         while ( TRUE )
         {
-            // Disable file system redirection
-            wow64Disabled = Wow64DisableWow64FsRedirection( &oldValueWow64 );
+            // Analyze current subdirectory
+            analyseSubdir( pparams );
 
-            // Reset results list
-            EmptyTheList( pparams->pResList );
-
-            // Reset results item
-            ZeroMemory( pparams->pResItem, sizeof( Item ) );
-
-            // Scan target dir
-            scanDir( pparams->curDir, pparams->pResList, pparams->pResItem,
-                TRUE, pparams->bNewLoc );
-
-            // Re-enable redirection
-            if ( wow64Disabled )
-            {
-                if ( !( Wow64RevertWow64FsRedirection( oldValueWow64 ) ) )
-                    MessageBox( NULL, TEXT( "Re-enable redirection failed." ),
-                        TEXT( "Dir Glance" ), MB_ICONERROR) ;
-            }
-
-            // Sort results
-            if ( *( pparams->bNewLoc ) == FALSE )
-                sortResults( pparams->pResList, pparams->sortMethod );
-
-            // Display results
-            if ( *( pparams->bNewLoc ) == FALSE )
-                showResults( pparams->pResList, pparams->pResItem,
-                    pparams->hwndLBox );
-
-
+            // Check for completed task or restart
             if ( *( pparams->bNewLoc ) == TRUE )
             {
                 // Start all over again
@@ -163,7 +113,16 @@ void Thread( PVOID pvoid )
             }
             else
             {
+                // Sort results
+                sortResults( pparams->pResList, pparams->sortMethod );
+
+                // Display results
+                showResults( pparams->pResList, pparams->pResItem,
+                    pparams->hwndLBox );
+
+                // Update status
                 pparams->iStatus = STATUS_DONE;
+
                 break;
             }
         }
@@ -177,8 +136,6 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
     static int cxChar, cyChar;
     static int cxClient, cyClient;
     static TCHAR currentDir[ MAX_PATH + 1 ] = { 0 };
-    static TCHAR selSubDir[ MAX_PATH + 1 ] = { 0 };
-    int currentSelIndex;
     static LOGFONT logfont;
     static HFONT hFont;
 
@@ -205,13 +162,10 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         // Setup listboxes horizontal extents
         setupLBoxHorzExt( hElem );
 
-        // Get current dir
-        GetCurrentDirectory( MAX_PATH + 1, currentDir );
-
         // Update current dir & places
         updateCurDirPlaces( hElem, currentDir );
 
-        // Update 'Contents' list box ---> lengthy task !!!!
+        // Initialize results list
         InitializeList( &resultsList );
 
         // Seutp worker thread infos
@@ -236,42 +190,13 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         SetEvent( hEvent );
         return 0;
 
-    case WM_SIZE :
-        // Get client size
-        cxClient = LOWORD( lParam );
-        cyClient = HIWORD( lParam );
-
-        // Size children
-        sizeChildren( hElem, cxChar, cyChar, cxClient, cyClient );
-        return 0;
-
     case WM_COMMAND :
         if ( LOWORD( wParam ) == ID_PLACESLBOX &&
              HIWORD( wParam ) == LBN_DBLCLK )
         {
-            if ( LB_ERR == ( currentSelIndex =
-                SendMessage( hElem[ ID_PLACESLBOX ], LB_GETCURSEL, 0, 0 ) ) )
+            // Fetch selected subdir and change to it
+            if ( !( fetchSelSubdir( hElem, currentDir ) ) )
                 break;
-
-            SendMessage( hElem[ ID_PLACESLBOX ], LB_GETTEXT, currentSelIndex,
-                ( LPARAM )selSubDir );
-
-            selSubDir[ lstrlen( selSubDir ) - 1 ] = '\0';
-
-            // Try to go to selected subdirectory,
-            // if that doesn't work it has to be a drive
-            if ( !SetCurrentDirectory( selSubDir + 1 ) )
-            {
-                selSubDir[ 3 ] = ':';
-                selSubDir[ 4 ] = '\0';
-                SetCurrentDirectory( selSubDir + 2 );
-            }
-
-            // Get the new directory name and fill the list box.
-            GetCurrentDirectory( MAX_PATH + 1, currentDir );
-
-            // Update current dir & places
-            updateCurDirPlaces( hElem, currentDir );
 
             // Update 'Contents' list box
             // Trigger a new scan
@@ -288,6 +213,15 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         }
         return 0;
 
+    case WM_SIZE :
+        // Get client size
+        cxClient = LOWORD( lParam );
+        cyClient = HIWORD( lParam );
+
+        // Size children
+        sizeChildren( hElem, cxChar, cyChar, cxClient, cyClient );
+        return 0;
+
     case WM_DESTROY :
         // Housekeeping
         EmptyTheList( &resultsList );
@@ -301,88 +235,115 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
     return DefWindowProc( hwnd, message, wParam, lParam );
 }
 
+void analyseSubdir( PPARAMS pparams )
+{
+    PVOID oldValueWow64 = NULL;
+    BOOL wow64Disabled = FALSE;
+
+    // Reset results list
+    EmptyTheList( pparams->pResList );
+
+    // Reset results item
+    ZeroMemory( pparams->pResItem, sizeof( Item ) );
+
+    // Disable file system redirection
+    wow64Disabled = Wow64DisableWow64FsRedirection( &oldValueWow64 );
+
+    // Scan target dir
+    scanDir( pparams->curDir, pparams->pResList, pparams->pResItem,
+        TRUE, pparams->bNewLoc );
+
+    // Re-enable redirection
+    if ( wow64Disabled )
+    {
+        if ( !( Wow64RevertWow64FsRedirection( oldValueWow64 ) ) )
+            MessageBox( NULL, TEXT( "Re-enable redirection failed." ),
+            TEXT( "Dir Glance" ), MB_ICONERROR);
+    }
+}
+
 void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam )
 {
     // Create 'Current Location' label
-        hElem[ ID_CURLOCLBL ] = CreateWindow(
-            TEXT( "static" ), TEXT( "Current Location :" ),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_CURLOCLBL ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    hElem[ ID_CURLOCLBL ] = CreateWindow(
+        TEXT( "static" ), TEXT( "Current Location :" ),
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_CURLOCLBL ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 
-        // Create 'Current Dir' list box
-        hElem[ ID_CURDIRLBOX ] = CreateWindow(
-            TEXT( "listbox" ), NULL,
-            WS_CHILD | WS_VISIBLE | LBS_STANDARD | WS_HSCROLL,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_CURDIRLBOX ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    // Create 'Current Dir' list box
+    hElem[ ID_CURDIRLBOX ] = CreateWindow(
+        TEXT( "listbox" ), NULL,
+        WS_CHILD | WS_VISIBLE | LBS_STANDARD | WS_HSCROLL,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_CURDIRLBOX ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 
-        // Create 'Places' label
-        hElem[ ID_PLACESLBL ] = CreateWindow(
-            TEXT( "static" ), TEXT( "Places :" ),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_PLACESLBL ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    // Create 'Places' label
+    hElem[ ID_PLACESLBL ] = CreateWindow(
+        TEXT( "static" ), TEXT( "Places :" ),
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_PLACESLBL ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 
-        // Create 'Places' list box
-        hElem[ ID_PLACESLBOX ] = CreateWindow(
-            TEXT( "listbox" ), NULL,
-            WS_CHILD | WS_VISIBLE | LBS_STANDARD | WS_HSCROLL,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_PLACESLBOX ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    // Create 'Places' list box
+    hElem[ ID_PLACESLBOX ] = CreateWindow(
+        TEXT( "listbox" ), NULL,
+        WS_CHILD | WS_VISIBLE | LBS_STANDARD | WS_HSCROLL,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_PLACESLBOX ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 
-        // Create 'Contents' label
-        hElem[ ID_CONTSLBL ] = CreateWindow(
-            TEXT( "static" ), TEXT( "Contents :" ),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_CONTSLBL ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    // Create 'Contents' label
+    hElem[ ID_CONTSLBL ] = CreateWindow(
+        TEXT( "static" ), TEXT( "Contents :" ),
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_CONTSLBL ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 
-        // Create 'Contents' list box
-        hElem[ ID_CONTSLBOX ] = CreateWindow(
-            TEXT( "listbox" ), NULL,
-            WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_BORDER |
-                WS_VSCROLL | WS_HSCROLL,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_CONTSLBOX ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    // Create 'Contents' list box
+    hElem[ ID_CONTSLBOX ] = CreateWindow(
+        TEXT( "listbox" ), NULL,
+        WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_BORDER |
+        WS_VSCROLL | WS_HSCROLL,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_CONTSLBOX ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 
-        // Create 'Sort' label
-        hElem[ ID_SORTLBL ] = CreateWindow(
-            TEXT( "static" ), TEXT( "Sort :" ),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_SORTLBL ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    // Create 'Sort' label
+    hElem[ ID_SORTLBL ] = CreateWindow(
+        TEXT( "static" ), TEXT( "Sort :" ),
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_SORTLBL ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 
-        // Create 'By Name' button
-        hElem[ ID_NAMEBTN ] = CreateWindow(
-            TEXT( "button" ), TEXT( "By Name" ),
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_NAMEBTN ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    // Create 'By Name' button
+    hElem[ ID_NAMEBTN ] = CreateWindow(
+        TEXT( "button" ), TEXT( "By Name" ),
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_NAMEBTN ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 
-        // Create 'By Size' button
-        hElem[ ID_SIZEBTN ] = CreateWindow(
-            TEXT( "button" ), TEXT( "By Size" ),
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_SIZEBTN ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    // Create 'By Size' button
+    hElem[ ID_SIZEBTN ] = CreateWindow(
+        TEXT( "button" ), TEXT( "By Size" ),
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_SIZEBTN ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 
-        // Create 'By Date' button
-        hElem[ ID_DATEBTN ] = CreateWindow(
-            TEXT( "button" ), TEXT( "By Date" ),
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hwnd, ( HMENU )( ID_DATEBTN ),
-            ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+    // Create 'By Date' button
+    hElem[ ID_DATEBTN ] = CreateWindow(
+        TEXT( "button" ), TEXT( "By Date" ),
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_DATEBTN ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 }
 
 void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl )
@@ -440,8 +401,42 @@ void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl )
             12 * cxCh, 2 * cyCh, TRUE);
 }
 
+BOOL fetchSelSubdir( HWND* hElem, TCHAR* currentDir )
+{
+    int currentSelIndex = 0;
+    TCHAR selSubDir[ MAX_PATH + 1 ] = { 0 };
+
+    // Fetch selected subdir and change to it
+    if ( LB_ERR == ( currentSelIndex =
+        SendMessage( hElem[ ID_PLACESLBOX ], LB_GETCURSEL, 0, 0 ) ) )
+        return FALSE;
+
+    SendMessage( hElem[ ID_PLACESLBOX ], LB_GETTEXT, currentSelIndex,
+        ( LPARAM )selSubDir );
+
+    selSubDir[ lstrlen( selSubDir ) - 1 ] = '\0';
+
+    // Try to go to selected subdirectory,
+    // if that doesn't work it has to be a drive
+    if ( !SetCurrentDirectory( selSubDir + 1 ) )
+    {
+        selSubDir[ 3 ] = ':';
+        selSubDir[ 4 ] = '\0';
+        SetCurrentDirectory( selSubDir + 2 );
+    }
+
+    // Update current dir & places
+    updateCurDirPlaces( hElem, currentDir );
+
+    return TRUE;
+}
+
 void updateCurDirPlaces( HWND* hElem, TCHAR* currentDir )
 {
+    // Get current dir
+    memset( currentDir, 0, sizeof( TCHAR ) * ( MAX_PATH + 1 ) );
+    GetCurrentDirectory( MAX_PATH + 1, currentDir );
+
     // Update 'Current Dir' list box
     SendMessage( hElem[ ID_CURDIRLBOX ], LB_RESETCONTENT, 0, 0 );
     SendMessage( hElem[ ID_CURDIRLBOX ], LB_ADDSTRING, 0, ( LPARAM )currentDir );
