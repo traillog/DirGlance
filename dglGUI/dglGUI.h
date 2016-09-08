@@ -13,6 +13,8 @@
 #define     ID_NAMEBTN              7
 #define     ID_SIZEBTN              8
 #define     ID_DATEBTN              9
+#define     ID_DIRSBTN              10
+#define     ID_FILESBTN             11
 
 // Status IDs
 #define     STATUS_READY            0

@@ -11,17 +11,14 @@
 // Worker thread data
 typedef struct paramsTag
 {
-     HWND   hLBox;
-     HWND   hNameBtn;
-     HWND   hSizeBtn;
-     HWND   hDateBtn;
+     HWND*  hElem;
      HANDLE hEvent;
      int    iStatus;
      BOOL*  bNewLoc;
      TCHAR* curDir;
      List*  pResList;
      Item*  pResItem;
-     int*    sortMethod;
+     int*   sortMethod;
 }
 PARAMS, *PPARAMS;
 
@@ -39,7 +36,7 @@ BOOL fetchSelSubdir( HWND* hElem, TCHAR* currentDir );
 void updateCurDirPlaces( HWND* hElem, TCHAR* currentDir );
 void setupFontConts( HWND* hElem, LOGFONT* pLogfont, HFONT* pHfont );
 void setupLBoxHorzExt( HWND* hElem );
-void updateStateSortBtns( HWND hNameB, HWND hSizeB, HWND hDateB, BOOL state );
+void updateStateSortBtns( HWND* hElem, BOOL state );
 
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
     PSTR szCmdLine, int iCmdShow )
@@ -114,7 +111,8 @@ void Thread( PVOID pvoid )
                 // Start all over again
                 OutputDebugString( TEXT( "Restart thread\n" ) );
                 *( pparams->bNewLoc ) = FALSE;
-                SendMessage( pparams->hLBox, LB_RESETCONTENT, 0, 0 );
+                SendMessage( pparams->hElem[ ID_CONTSLBOX ],
+                    LB_RESETCONTENT, 0, 0 );
             }
             else
             {
@@ -123,14 +121,13 @@ void Thread( PVOID pvoid )
 
                 // Display results
                 showResults( pparams->pResList, pparams->pResItem,
-                    pparams->hLBox );
+                    pparams->hElem[ ID_CONTSLBOX ] );
 
                 // Update status
                 pparams->iStatus = STATUS_DONE;
 
                 // Enalbe sorting buttons
-                updateStateSortBtns( pparams->hNameBtn, pparams->hSizeBtn,
-                    pparams->hDateBtn, TRUE );
+                updateStateSortBtns( pparams->hElem, TRUE );
                 
                 break;
             }
@@ -141,7 +138,7 @@ void Thread( PVOID pvoid )
 LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
     WPARAM wParam, LPARAM lParam )
 {
-    static HWND hElem[ 10 ] = { 0 };
+    static HWND hElem[ 12 ] = { 0 };
     static int cxChar, cyChar;
     static int cxClient, cyClient;
     static TCHAR currentDir[ MAX_PATH + 1 ] = { 0 };
@@ -175,8 +172,7 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         updateCurDirPlaces( hElem, currentDir );
 
         // Disable sorting buttons
-        updateStateSortBtns( hElem[ ID_NAMEBTN ], hElem[ ID_SIZEBTN ],
-            hElem[ ID_DATEBTN ], FALSE );
+        updateStateSortBtns( hElem, FALSE );
 
         // Initialize results list
         InitializeList( &resultsList );
@@ -187,10 +183,7 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         bResetTask = FALSE;
         sortMethod = BY_SIZE;
 
-        params.hLBox = hElem[ ID_CONTSLBOX ];
-        params.hNameBtn = hElem[ ID_NAMEBTN ];
-        params.hSizeBtn = hElem[ ID_SIZEBTN ];
-        params.hDateBtn = hElem[ ID_DATEBTN ];
+        params.hElem = hElem;
         params.hEvent = hEvent;
         params.iStatus = STATUS_WORKING;
         params.bNewLoc = &bResetTask;
@@ -225,8 +218,7 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
                 params.iStatus = STATUS_WORKING;
 
                 // Disable sorting buttons
-                updateStateSortBtns( hElem[ ID_NAMEBTN ], hElem[ ID_SIZEBTN ],
-                    hElem[ ID_DATEBTN ], FALSE );
+                updateStateSortBtns( hElem, FALSE );
 
                 // Trigger next dir scan
                 SetEvent( hEvent );
@@ -252,6 +244,20 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         {
             // Sort results by Date
             applySorting( hElem, &sortMethod, BY_MODIF, &resultsList, &resultsItem );
+        }
+
+        if ( LOWORD( wParam ) == ID_DIRSBTN &&      
+             HIWORD( wParam ) == BN_CLICKED )
+        {
+            // Sort results by Dirs
+            applySorting( hElem, &sortMethod, BY_DIRS, &resultsList, &resultsItem );
+        }
+
+        if ( LOWORD( wParam ) == ID_FILESBTN &&      
+             HIWORD( wParam ) == BN_CLICKED )
+        {
+            // Sort results by Files
+            applySorting( hElem, &sortMethod, BY_FILES, &resultsList, &resultsItem );
         }
 
         return 0;
@@ -309,8 +315,7 @@ void applySorting( HWND* hElem, int* pSortMeth, int newSort,
     List* pResList, Item* pResItem )
 {
     // Disable sorting buttons
-    updateStateSortBtns( hElem[ ID_NAMEBTN ], hElem[ ID_SIZEBTN ],
-        hElem[ ID_DATEBTN ], FALSE );
+    updateStateSortBtns( hElem, FALSE );
 
     // Delete displayed contents
     SendMessage( hElem[ ID_CONTSLBOX ], LB_RESETCONTENT, 0, 0 );
@@ -325,8 +330,7 @@ void applySorting( HWND* hElem, int* pSortMeth, int newSort,
     showResults( pResList, pResItem, hElem[ ID_CONTSLBOX ] );
 
     // Enable sorting buttons
-    updateStateSortBtns( hElem[ ID_NAMEBTN ], hElem[ ID_SIZEBTN ],
-        hElem[ ID_DATEBTN ], TRUE );
+    updateStateSortBtns( hElem, TRUE );
 }
 
 void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam )
@@ -411,61 +415,91 @@ void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam )
         0, 0, 0, 0,
         hwnd, ( HMENU )( ID_DATEBTN ),
         ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+    // Create 'By Dirs' button
+    hElem[ ID_DIRSBTN ] = CreateWindow(
+        TEXT( "button" ), TEXT( "By Dirs" ),
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_DIRSBTN ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+    // Create 'By Files' button
+    hElem[ ID_FILESBTN ] = CreateWindow(
+        TEXT( "button" ), TEXT( "By Files" ),
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_FILESBTN ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 }
 
 void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl )
 {
     // Size and position 'Current Location' label
-        MoveWindow( hElem[ ID_CURLOCLBL ],
-            cyCh, cyCh,
-            24 * cxCh, cyCh, TRUE);
+    MoveWindow( hElem[ ID_CURLOCLBL ],
+        cyCh, cyCh,
+        24 * cxCh, cyCh, TRUE);
 
-        // Size and position 'Current Dir' list box
-        MoveWindow( hElem[ ID_CURDIRLBOX ],
-            cyCh, 2 * cyCh,
-            cxCl - 3 * cyCh, 3 * cyCh, TRUE);
+    // Size and position 'Current Dir' list box
+    MoveWindow( hElem[ ID_CURDIRLBOX ],
+        cyCh, 2 * cyCh,
+        cxCl - 3 * cyCh, 3 * cyCh, TRUE);
 
-        // Size and position 'Places' label
-        MoveWindow( hElem[ ID_PLACESLBL ],
-            cyCh, 5 * cyCh,
-            24 * cxCh, cyCh, TRUE);
+    // Size and position 'Places' label
+    MoveWindow( hElem[ ID_PLACESLBL ],
+        cyCh, 5 * cyCh,
+        24 * cxCh, cyCh, TRUE);
 
-        // Size and position 'Places' list box
-        MoveWindow( hElem[ ID_PLACESLBOX ],
-            cyCh, 6 * cyCh,
-            30 * cxCh, cyCl - 7 * cyCh, TRUE);
+    // Size and position 'Places' list box
+    MoveWindow( hElem[ ID_PLACESLBOX ],
+        cyCh, 6 * cyCh,
+        30 * cxCh, cyCl - 7 * cyCh, TRUE);
 
-        // Size and position 'Contents' label
-        MoveWindow( hElem[ ID_CONTSLBL ],
-            cyCh + 30 * cxCh + cyCh, 5 * cyCh,
-            24 * cxCh, cyCh, TRUE);
+    // Size and position 'Contents' label
+    MoveWindow( hElem[ ID_CONTSLBL ],
+        cyCh + 30 * cxCh + cyCh, 5 * cyCh,
+        24 * cxCh, cyCh, TRUE);
 
-        // Size and position 'Contents' list box
-        MoveWindow( hElem[ ID_CONTSLBOX ],
-            cyCh + 30 * cxCh + cyCh, 6 * cyCh,
-            cxCl - ( cyCh + 30 * cxCh + cyCh + cyCh),
-            cyCl - 12 * cyCh, TRUE);
+    // Size and position 'Contents' list box
+    MoveWindow( hElem[ ID_CONTSLBOX ],
+        cyCh + 30 * cxCh + cyCh, 6 * cyCh,
+        cxCl - ( cyCh + 30 * cxCh + cyCh + cyCh),
+        cyCl - 12 * cyCh, TRUE);
 
-        // Size and position 'Sort' label
-        MoveWindow( hElem[ ID_SORTLBL ],
-            cyCh + 30 * cxCh + cyCh, cyCl - 5 * cyCh,
-            24 * cxCh, cyCh, TRUE);
+    // Size and position 'Sort' label
+    MoveWindow( hElem[ ID_SORTLBL ],
+        cyCh + 30 * cxCh + cyCh, cyCl - 5 * cyCh,
+        24 * cxCh, cyCh, TRUE);
 
-        // Size and position 'By Name' button
-        MoveWindow( hElem[ ID_NAMEBTN ],
-            cyCh + 30 * cxCh + cyCh, cyCl - 4 * cyCh,
-            12 * cxCh, 2 * cyCh, TRUE);
+    // Size and position 'By Date' button
+    MoveWindow( hElem[ ID_DATEBTN ],
+        cyCh + 30 * cxCh + cyCh,
+        cyCl - 4 * cyCh,
+        12 * cxCh, 2 * cyCh, TRUE);
 
-        // Size and position 'By Size' button
-        MoveWindow( hElem[ ID_SIZEBTN ],
-            cyCh + 30 * cxCh + cyCh + 13 * cxCh, cyCl - 4 * cyCh,
-            12 * cxCh, 2 * cyCh, TRUE);
+    // Size and position 'By Dirs' button
+    MoveWindow( hElem[ ID_DIRSBTN ],
+        cyCh + 30 * cxCh + cyCh + 1 * 13 * cxCh,
+        cyCl - 4 * cyCh,
+        12 * cxCh, 2 * cyCh, TRUE);
 
-        // Size and position 'By Date' button
-        MoveWindow( hElem[ ID_DATEBTN ],
-            cyCh + 30 * cxCh + cyCh + 13 * cxCh + 13 * cxCh,
-            cyCl - 4 * cyCh,
-            12 * cxCh, 2 * cyCh, TRUE);
+    // Size and position 'By Files' button
+    MoveWindow( hElem[ ID_FILESBTN ],
+        cyCh + 30 * cxCh + cyCh + 2 * 13 * cxCh,
+        cyCl - 4 * cyCh,
+        12 * cxCh, 2 * cyCh, TRUE);
+
+    // Size and position 'By Size' button
+    MoveWindow( hElem[ ID_SIZEBTN ],
+        cyCh + 30 * cxCh + cyCh + 3 * 13 * cxCh,
+        cyCl - 4 * cyCh,
+        12 * cxCh, 2 * cyCh, TRUE);
+
+    // Size and position 'By Name' button
+    MoveWindow( hElem[ ID_NAMEBTN ],
+        cyCh + 30 * cxCh + cyCh + 4 * 13 * cxCh,
+        cyCl - 4 * cyCh,
+        12 * cxCh, 2 * cyCh, TRUE);
 }
 
 BOOL fetchSelSubdir( HWND* hElem, TCHAR* currentDir )
@@ -532,9 +566,11 @@ void setupLBoxHorzExt( HWND* hElem )
     SendMessage( hElem[ ID_CONTSLBOX ], LB_SETHORIZONTALEXTENT, 1000, 0 );
 }
 
-void updateStateSortBtns( HWND hNameB, HWND hSizeB, HWND hDateB, BOOL state )
+void updateStateSortBtns( HWND* hElem, BOOL state )
 {
-    EnableWindow( hNameB, state );
-    EnableWindow( hSizeB, state );
-    EnableWindow( hDateB, state );
+    EnableWindow( hElem[ ID_NAMEBTN ], state );
+    EnableWindow( hElem[ ID_SIZEBTN ], state );
+    EnableWindow( hElem[ ID_DATEBTN ], state );
+    EnableWindow( hElem[ ID_DIRSBTN ], state );
+    EnableWindow( hElem[ ID_FILESBTN ], state );
 }
