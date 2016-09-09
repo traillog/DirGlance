@@ -15,6 +15,8 @@
 #define     ID_DATEBTN              9
 #define     ID_DIRSBTN              10
 #define     ID_FILESBTN             11
+#define     ID_ELAPTIMELBL          12
+#define     ID_ELAPTIMEWND          13
 
 // Status IDs
 #define     STATUS_READY            0

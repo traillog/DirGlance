@@ -8,27 +8,40 @@
 #include "dglGUI.h"
 #include "list.h"               // Definition list ADT
 
-// Worker thread data
-typedef struct paramsTag
+// Scan worker thread data
+typedef struct paramsScanTag
 {
      HWND*  hElem;
      HANDLE hEvent;
+     HANDLE hEventTimer;
      int    iStatus;
      BOOL*  bNewLoc;
      TCHAR* curDir;
      List*  pResList;
      Item*  pResItem;
      int*   sortMethod;
+     BOOL*  pContTimer;
 }
-PARAMS, *PPARAMS;
+PARAMSSCAN, *PPARAMSSCAN;
+
+// Timer worker thread data
+typedef struct paramsTimerTag
+{
+     HANDLE hEvent;
+     BOOL   bContinue;
+     HWND   hTimerWnd;
+     int*   pStatusScan;
+}
+PARAMSTIMER, *PPARAMSTIMER;
 
 extern BOOL scanDir( LPTSTR tDir, List* resList, Item* parentItem, BOOL fstLevel, BOOL* pReset );
 extern void showResults( List* resultsList, Item* resultsLevel, HWND hConstLBox );
 extern void sortResults( List* plist, int sortMethod );
 
 LRESULT CALLBACK WndProc( HWND, UINT, WPARAM, LPARAM );
+LRESULT APIENTRY WndProcElpTime( HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam );
 
-void analyseSubdir( PPARAMS pparams );
+void analyseSubdir( PPARAMSSCAN pparams );
 void applySorting( HWND* hElem, int* pSortMeth, int newSort, List* pResList, Item* pResItem );
 void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam );
 void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl );
@@ -87,11 +100,11 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
     return msg.wParam;
 }
 
-void Thread( PVOID pvoid )
+void ScanThread( PVOID pvoid )
 {
-    volatile PPARAMS pparams;
+    volatile PPARAMSSCAN pparams;
 
-    pparams = ( PPARAMS )pvoid;
+    pparams = ( PPARAMSSCAN )pvoid;
 
     while ( TRUE )
     {
@@ -102,6 +115,13 @@ void Thread( PVOID pvoid )
         // as long as you are allowed to
         while ( TRUE )
         {
+            //if ( *( pparams->pContTimer ) == FALSE &&
+            //     pparams->iStatus == STATUS_WORKING )
+            //{
+            //    // wait until timer has been reseted
+            //    WaitForSingleObject( pparams->hEventTimer, INFINITE );
+            //}
+
             // Analyze current subdirectory
             analyseSubdir( pparams );
 
@@ -110,7 +130,12 @@ void Thread( PVOID pvoid )
             {
                 // Start all over again
                 OutputDebugString( TEXT( "Restart thread\n" ) );
+                
                 *( pparams->bNewLoc ) = FALSE;
+
+                // Stop elapsed time
+                *( pparams->pContTimer ) = FALSE;
+
                 SendMessage( pparams->hElem[ ID_CONTSLBOX ],
                     LB_RESETCONTENT, 0, 0 );
             }
@@ -126,6 +151,9 @@ void Thread( PVOID pvoid )
                 // Update status
                 pparams->iStatus = STATUS_DONE;
 
+                // Stop elapsed time
+                *( pparams->pContTimer ) = FALSE;
+
                 // Enalbe sorting buttons
                 updateStateSortBtns( pparams->hElem, TRUE );
                 
@@ -135,22 +163,71 @@ void Thread( PVOID pvoid )
     }
 }
 
+void TimerThread( PVOID pvoid )
+{
+    LONG lTime = 0;
+    HDC hdc;
+    static TCHAR szBuffer[ 32 ] = { 0 };
+    volatile PPARAMSTIMER pparams;
+
+    pparams = ( PPARAMSTIMER )pvoid;
+
+    while ( TRUE )
+    {
+        // Wait until the event gets signaled
+        WaitForSingleObject( pparams->hEvent, INFINITE );
+
+        // Reset counter
+        lTime = 0;
+
+        while ( pparams->bContinue )
+        {
+            hdc = GetDC( pparams->hTimerWnd );
+
+            SetTextAlign( hdc, TA_CENTER | TA_TOP );
+
+            TextOut( hdc, 12 * 8, 1 * 8, szBuffer,
+                wsprintf( szBuffer, TEXT( "    %d    " ), lTime ) );
+
+            ReleaseDC( pparams->hTimerWnd, hdc );
+
+            lTime++;
+
+            if ( lTime < 0 )
+                lTime = 0;
+        }
+
+        if ( *( pparams->pStatusScan ) == STATUS_WORKING )
+        {
+            // Trigger new count
+            pparams->bContinue = TRUE;
+            SetEvent( pparams->hEvent );
+        }
+        else
+            break;
+    }
+}
+
+
 LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
     WPARAM wParam, LPARAM lParam )
 {
-    static HWND hElem[ 12 ] = { 0 };
+    static HWND hElem[ 14 ] = { 0 };
     static int cxChar, cyChar;
     static int cxClient, cyClient;
     static TCHAR currentDir[ MAX_PATH + 1 ] = { 0 };
     static LOGFONT logfont;
     static HFONT hFont;
 
-    static HANDLE hEvent;
-    static PARAMS params;
+    static HANDLE hEventScan;
+    static PARAMSSCAN paramsScan;
     static BOOL bResetTask;
     static List resultsList = { 0 };
     static Item resultsItem = { 0 };
     static int sortMethod = BY_SIZE;
+
+    static HANDLE hEventTimer;
+    static PARAMSTIMER paramsTimer;
 
     switch ( message )
     {
@@ -177,26 +254,43 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
         // Initialize results list
         InitializeList( &resultsList );
 
-        // Seutp worker thread infos
-        hEvent = CreateEvent( NULL, FALSE, FALSE, NULL );
+        // Seutp scan worker thread infos
+        hEventScan = CreateEvent( NULL, FALSE, FALSE, NULL );
+
+        // Setup timer worker thread infos
+        hEventTimer = CreateEvent( NULL, FALSE, FALSE, NULL );
 
         bResetTask = FALSE;
         sortMethod = BY_SIZE;
 
-        params.hElem = hElem;
-        params.hEvent = hEvent;
-        params.iStatus = STATUS_WORKING;
-        params.bNewLoc = &bResetTask;
-        params.curDir = currentDir;
-        params.pResList = &resultsList;
-        params.pResItem = &resultsItem;
-        params.sortMethod = &sortMethod;
+        paramsScan.hElem = hElem;
+        paramsScan.hEvent = hEventScan;
+        paramsScan.hEventTimer = hEventTimer;
+        paramsScan.iStatus = STATUS_WORKING;
+        paramsScan.bNewLoc = &bResetTask;
+        paramsScan.curDir = currentDir;
+        paramsScan.pResList = &resultsList;
+        paramsScan.pResItem = &resultsItem;
+        paramsScan.sortMethod = &sortMethod;
+        paramsScan.pContTimer = &paramsTimer.bContinue;
 
-        // Start worker thread (paused)
-        _beginthread( Thread, 0, &params );
+        paramsTimer.bContinue = TRUE;
+        paramsTimer.hEvent = hEventTimer;
+        paramsTimer.hTimerWnd = hElem[ ID_ELAPTIMEWND ];
+        paramsTimer.pStatusScan = &paramsScan.iStatus;
+
+        // Start scan worker thread (paused)
+        _beginthread( ScanThread, 0, &paramsScan );
+
+        // Start timer worker thread (paused)
+        _beginthread( TimerThread, 0, &paramsTimer );
 
         // Trigger initial dir scan
-        SetEvent( hEvent );
+        SetEvent( hEventScan );
+
+        // Trigger initial lapse timer
+        SetEvent( hEventTimer );
+
         return 0;
 
     case WM_COMMAND :
@@ -210,19 +304,32 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
             // Update 'Contents' list box
             // Trigger a new scan
             bResetTask = TRUE;
-            params.curDir = currentDir;
+            paramsScan.curDir = currentDir;
 
-            if ( params.iStatus == STATUS_DONE )
+            if ( paramsScan.iStatus == STATUS_DONE )
             {
                 // Update status
-                params.iStatus = STATUS_WORKING;
+                paramsScan.iStatus = STATUS_WORKING;
 
                 // Disable sorting buttons
                 updateStateSortBtns( hElem, FALSE );
 
+                paramsTimer.bContinue = TRUE;
+
                 // Trigger next dir scan
-                SetEvent( hEvent );
+                SetEvent( hEventScan );
+
+                // Trigger lapse timer
+                SetEvent( hEventTimer );
             }
+            //else
+            //{
+            //    // Reset lapse timer
+            //    paramsTimer.bContinue = FALSE;
+
+            //    // Trigger lapse timer
+            //    SetEvent( hEventTimer );
+            //}
         }
 
         if ( LOWORD( wParam ) == ID_NAMEBTN &&      
@@ -284,7 +391,14 @@ LRESULT CALLBACK WndProc( HWND hwnd, UINT message,
     return DefWindowProc( hwnd, message, wParam, lParam );
 }
 
-void analyseSubdir( PPARAMS pparams )
+LRESULT APIENTRY WndProcElpTime( HWND hwnd, UINT message,
+    WPARAM wParam, LPARAM lParam )
+{
+
+    return DefWindowProc (hwnd, message, wParam, lParam) ;
+}
+
+void analyseSubdir( PPARAMSSCAN pparams )
 {
     PVOID oldValueWow64 = NULL;
     BOOL wow64Disabled = FALSE;
@@ -335,6 +449,8 @@ void applySorting( HWND* hElem, int* pSortMeth, int newSort,
 
 void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam )
 {
+    WNDCLASS wndclass;
+
     // Create 'Current Location' label
     hElem[ ID_CURLOCLBL ] = CreateWindow(
         TEXT( "static" ), TEXT( "Current Location :" ),
@@ -431,6 +547,35 @@ void createChildren( HWND* hElem, HWND hwnd, LPARAM lParam )
         0, 0, 0, 0,
         hwnd, ( HMENU )( ID_FILESBTN ),
         ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+    // Create 'Elapsed Time' label
+    hElem[ ID_ELAPTIMELBL ] = CreateWindow(
+        TEXT( "static" ), TEXT( "Last Scan :" ),
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        0, 0, 0, 0,
+        hwnd, ( HMENU )( ID_ELAPTIMELBL ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
+
+    // Create 'Elapsed Time' window
+    wndclass.style         = CS_HREDRAW | CS_VREDRAW;
+    wndclass.cbClsExtra    = 0;
+    wndclass.cbWndExtra    = 0;
+    wndclass.hInstance     = ( ( LPCREATESTRUCT )lParam )->hInstance;
+    wndclass.hIcon         = NULL;
+    wndclass.hCursor       = LoadCursor( NULL, IDC_ARROW );
+    wndclass.hbrBackground = ( HBRUSH )GetStockObject( WHITE_BRUSH );
+    wndclass.lpszMenuName  = NULL;
+    wndclass.lpfnWndProc   = WndProcElpTime;
+    wndclass.lpszClassName = TEXT( "ElapTimeWnd" );
+
+    RegisterClass( &wndclass );
+
+    hElem[ ID_ELAPTIMEWND ] = CreateWindow(
+        TEXT( "ElapTimeWnd" ), NULL,
+        WS_CHILD | WS_VISIBLE | WS_BORDER,
+        0, 0, 0, 0, 
+        hwnd, ( HMENU )( ID_ELAPTIMEWND ),
+        ( ( LPCREATESTRUCT )lParam )->hInstance, NULL );
 }
 
 void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl )
@@ -500,6 +645,18 @@ void sizeChildren( HWND* hElem, int cxCh, int cyCh, int cxCl, int cyCl )
         cyCh + 30 * cxCh + cyCh + 4 * 13 * cxCh,
         cyCl - 4 * cyCh,
         12 * cxCh, 2 * cyCh, TRUE);
+
+    // Size and position 'Elapsed Time' label
+    MoveWindow( hElem[ ID_ELAPTIMELBL ],
+        cyCh + 30 * cxCh + cyCh + 4 * 13 * cxCh + 15 * cxCh,
+        cyCl - 5 * cyCh,
+        24 * cxCh, cyCh, TRUE);
+
+    // Size and position 'Elapsed Time' label
+    MoveWindow( hElem[ ID_ELAPTIMEWND ],
+        cyCh + 30 * cxCh + cyCh + 4 * 13 * cxCh + 15 * cxCh,
+        cyCl - 4 * cyCh,
+        24 * cxCh, 2 * cyCh, TRUE);
 }
 
 BOOL fetchSelSubdir( HWND* hElem, TCHAR* currentDir )
